@@ -1110,6 +1110,93 @@ I.s_end = svg('<rect x="40" y="40" width="190" height="220" rx="12" fill="#fff" 
   arrow('M250 150 L320 150','#1f5fae',10)+'<circle cx="345" cy="150" r="40" fill="#e6f6ec" stroke="#14843b" stroke-width="4"/>'+tx(345,160,'○×',{s:28,c:'#14843b'}),'#f4f7fb');
 return I;
 })();
+
+// ===== 結果レポートを本物のWord形式（.docx）で作る（外部ライブラリなし・ZIPも自前） =====
+const DOCX = (()=>{
+  const CRC=(()=>{ const t=new Uint32Array(256); for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c=c&1?0xEDB88320^(c>>>1):c>>>1; t[n]=c>>>0; } return t; })();
+  const crc32=b=>{ let c=0xFFFFFFFF; for(let i=0;i<b.length;i++) c=CRC[(c^b[i])&255]^(c>>>8); return (c^0xFFFFFFFF)>>>0; };
+  const enc=s=>new TextEncoder().encode(s);
+  function zip(files){ // files: [[name, string]]  無圧縮（store）で詰める
+    const parts=[], cent=[]; let off=0;
+    for(const [name,str] of files){
+      const nb=enc(name), db=enc(str), c=crc32(db);
+      const lh=new DataView(new ArrayBuffer(30));
+      lh.setUint32(0,0x04034b50,true); lh.setUint16(4,20,true); lh.setUint16(6,0x0800,true); lh.setUint16(8,0,true);
+      lh.setUint16(10,0,true); lh.setUint16(12,0x21,true); lh.setUint32(14,c,true); lh.setUint32(18,db.length,true); lh.setUint32(22,db.length,true);
+      lh.setUint16(26,nb.length,true); lh.setUint16(28,0,true);
+      parts.push(new Uint8Array(lh.buffer),nb,db);
+      const ch=new DataView(new ArrayBuffer(46));
+      ch.setUint32(0,0x02014b50,true); ch.setUint16(4,20,true); ch.setUint16(6,20,true); ch.setUint16(8,0x0800,true); ch.setUint16(10,0,true);
+      ch.setUint16(12,0,true); ch.setUint16(14,0x21,true); ch.setUint32(16,c,true); ch.setUint32(20,db.length,true); ch.setUint32(24,db.length,true);
+      ch.setUint16(28,nb.length,true); ch.setUint32(42,off,true);
+      cent.push(new Uint8Array(ch.buffer),nb);
+      off+=30+nb.length+db.length;
+    }
+    const csize=cent.reduce((a,b)=>a+b.length,0);
+    const end=new DataView(new ArrayBuffer(22));
+    end.setUint32(0,0x06054b50,true); end.setUint16(8,files.length,true); end.setUint16(10,files.length,true); end.setUint32(12,csize,true); end.setUint32(16,off,true);
+    return new Blob([...parts,...cent,new Uint8Array(end.buffer)],{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+  }
+  const x=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'');
+  // 文字のかたまり。my=true はミャンマー文字（Myanmar Text）
+  function r(t,o){ o=o||{}; const my=o.my;
+    const f=my?'<w:rFonts w:ascii="Myanmar Text" w:hAnsi="Myanmar Text" w:eastAsia="Myanmar Text" w:cs="Myanmar Text"/>':'';
+    return '<w:r><w:rPr>'+f+(o.b?'<w:b/><w:bCs/>':'')+(o.color?'<w:color w:val="'+o.color+'"/>':'')+(o.sz?'<w:sz w:val="'+o.sz+'"/><w:szCs w:val="'+o.sz+'"/>':'')+(my?'<w:lang w:bidi="my-MM"/>':'')+'</w:rPr><w:t xml:space="preserve">'+x(t)+'</w:t></w:r>'; }
+  function p(runs,o){ o=o||{}; return '<w:p><w:pPr>'+(o.align?'<w:jc w:val="'+o.align+'"/>':'')+'<w:spacing w:before="'+(o.before||0)+'" w:after="'+(o.after==null?60:o.after)+'"/>'+(o.shade?'<w:shd w:val="clear" w:color="auto" w:fill="'+o.shade+'"/>':'')+'</w:pPr>'+runs+'</w:p>'; }
+  function cell(content,o){ o=o||{}; return '<w:tc><w:tcPr><w:tcW w:w="'+(o.w||0)+'" w:type="'+(o.w?'dxa':'auto')+'"/>'+(o.fill?'<w:shd w:val="clear" w:color="auto" w:fill="'+o.fill+'"/>':'')+'</w:tcPr>'+(content.startsWith('<w:p>')?content:p(content,{after:0}))+'</w:tc>'; }
+  function table(rows,widths){ const b='<w:top w:val="single" w:sz="4" w:color="888888"/><w:left w:val="single" w:sz="4" w:color="888888"/><w:bottom w:val="single" w:sz="4" w:color="888888"/><w:right w:val="single" w:sz="4" w:color="888888"/><w:insideH w:val="single" w:sz="4" w:color="888888"/><w:insideV w:val="single" w:sz="4" w:color="888888"/>';
+    return '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders>'+b+'</w:tblBorders><w:tblCellMar><w:left w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>'+widths.map(w=>'<w:gridCol w:w="'+w+'"/>').join('')+'</w:tblGrid>'+
+      rows.map(row=>'<w:tr>'+row.map((c,i)=>cell(c.t!=null?c.t:c,{w:widths[i],fill:c.fill})).join('')+'</w:tr>').join('')+'</w:tbl>'+p('',{after:60}); }
+  function build(bodyXml){
+    const doc='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'+bodyXml+
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1021" w:right="1021" w:bottom="1021" w:left="1021" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr></w:body></w:document>';
+    const styles='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Yu Gothic" w:hAnsi="Yu Gothic" w:eastAsia="Yu Gothic" w:cs="Myanmar Text"/><w:sz w:val="20"/><w:szCs w:val="20"/><w:lang w:val="en-US" w:eastAsia="ja-JP" w:bidi="my-MM"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="60" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>';
+    return zip([
+      ['[Content_Types].xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>'],
+      ['_rels/.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'],
+      ['word/_rels/document.xml.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+      ['word/document.xml',doc],
+      ['word/styles.xml',styles]
+    ]);
+  }
+  return {r,p,table,build};
+})();
+// 結果レポート（印刷と同じ内容）
+function reportDocx(h){
+  const {r,p,table,build}=DOCX; const st=catStats(h); const B='1F5FAE';
+  const showJa=LANG!=='my', showMy=LANG!=='ja';
+  const bi=(ja,my)=> (showJa?p(r(ja)):'')+(showMy?p(r(my,{my:true,color:'253D63'})):'');
+  const ng=h.items.map((it,i)=>({it,i,q:QBY[it.id]})).filter(o=>o.q && o.it.a!==o.q.ans);
+  let b='';
+  b+=p(r(COMPANY.ja,{sz:18}),{align:'right',after:0});
+  b+=p(r('外免切替 知識確認 練習 結果レポート',{b:true,sz:32,color:B}),{after:120});
+  b+=table([
+    [{t:r('氏名',{b:true}),fill:'EAF1FB'},r(h.name),{t:r('実施日時',{b:true}),fill:'EAF1FB'},r(fmtDate(h.date))],
+    [{t:r('種類',{b:true}),fill:'EAF1FB'},r(kindLabel(h)),{t:r('かかった時間',{b:true}),fill:'EAF1FB'},r(fmtSec(h.sec)+(h.timeUp?'（時間切れ）':''))],
+    [{t:r('研修',{b:true}),fill:'EAF1FB'},r(ksDone(h.name)? '受講済（'+ksDone(h.name)+'）':'未受講'),{t:r('判定',{b:true}),fill:'EAF1FB'},r((h.pass?'合格':'不合格')+'（合格ライン '+h.passN+'問）',{b:true,color:h.pass?'14843B':'C62828'})],
+    [{t:r('得点',{b:true}),fill:'EAF1FB'},r(h.correct+' / '+h.n+'（正答率 '+Math.round(h.correct/h.n*100)+'%）',{b:true}),{t:r('',{}),fill:'EAF1FB'},r('')]
+  ],[1600,3200,1600,3400]);
+  b+=p(r('カテゴリ別の正答率',{b:true,sz:24,color:B}),{before:120});
+  b+=table([[{t:r('カテゴリ',{b:true}),fill:'EAF1FB'},{t:r('正解',{b:true}),fill:'EAF1FB'},{t:r('正答率',{b:true}),fill:'EAF1FB'}]].concat(
+    CATS.filter(c=>st[c.id]).map(c=>[r(c.ja)+(showMy?r(' / '+c.my,{my:true,color:'253D63'}):''), r(st[c.id].c+'/'+st[c.id].n), r(Math.round(st[c.id].c/st[c.id].n*100)+'%')])),[6400,1600,1800]);
+  b+=p(r('全問の正誤',{b:true,sz:24,color:B}),{before:120});
+  const cells=h.items.map((it,i)=>{ const q=QBY[it.id], ok=q&&it.a===q.ans; return {t:r((i+1)+(ok?'○':'×'),{b:!ok,color:ok?'333333':'C62828'}),fill:ok?null:'FDE0E0'}; });
+  const rows=[]; for(let i=0;i<cells.length;i+=10){ const row=cells.slice(i,i+10); while(row.length<10) row.push(r('')); rows.push(row); }
+  b+=table(rows,Array(10).fill(980));
+  b+=p(r('まちがえた問題と解説（'+ng.length+'問）',{b:true,sz:24,color:B}),{before:120});
+  if(!ng.length) b+=p(r('全問正解でした。'));
+  ng.forEach(o=>{
+    b+=p(r('問'+(o.i+1),{b:true})+r('　あなたの答え：'+(o.it.a==null?'未回答':(o.it.a?'○':'×'))+'　正しい答え：')+r(o.q.ans?'○':'×',{b:true,color:'C62828'})+(o.q.sign?r('　（標識：'+SIGNS[o.q.sign].ja+'）'):''),{before:100,after:20,shade:'F3F6FA'});
+    b+=bi(o.q.ja,o.q.my);
+    b+=p(r('解説',{b:true,color:B}),{after:0});
+    b+=bi(o.q.exJa,o.q.exMy);
+  });
+  b+=p('',{before:200});
+  b+=table([[{t:r('本人署名',{b:true}),fill:'EAF1FB'},{t:r('確認者',{b:true}),fill:'EAF1FB'},{t:r('確認日',{b:true}),fill:'EAF1FB'}],[r(' '),r(' '),r(' ')]],[3260,3260,3280]);
+  b+=p(r('※本アプリの問題は「交通の方法に関する教則」「道路交通法」をもとに作成した練習問題で、実際の試験問題ではありません。',{sz:16,color:'555555'}));
+  b+=p(r(COMPANY.ja+'　企業理念 '+RINEN.head+'　～一人はすべてのために、すべては一人のために～',{sz:16,color:'555555'}),{align:'center'});
+  return build(b);
+}
 const SLIDE_TEXT={};
 Object.assign(SLIDE_TEXT, {
  s_cover: {
@@ -2033,11 +2120,11 @@ function reportHtml(){
 function buildPrint(){ $('printArea').innerHTML=reportHtml(); }
 window.addEventListener('beforeprint',()=>{ if(view==='result') buildPrint(); else $('printArea').innerHTML=''; });
 function saveWord(){
-  const html='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><style>@page{size:21cm 29.7cm;margin:1.5cm}body{font-family:"Yu Gothic","Meiryo";font-size:10pt}.my{font-family:"Myanmar Text"}table{border-collapse:collapse;width:100%}th,td{border:1px solid #888;padding:3px 5px;font-size:9pt;text-align:left}th{background:#eee}.pi{border:1px solid #999;padding:4px;margin:4px 0}.sig div{display:inline-block;width:30%;border-bottom:1px solid #000;height:1cm;margin-right:3%}</style></head><body>'+reportHtml()+'</body></html>';
-  const blob=new Blob(['﻿'+html],{type:'application/msword'});
+  // 本物のWord形式（.docx）。スマホのWordでも開ける
+  const h=lastResult; const blob=reportDocx(h);
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-  const h=lastResult; a.download='効果測定レポート_'+(h.name||'')+'_'+(d=>d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'_'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0'))(new Date(h.date))+'.doc';
-  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
+  a.download='効果測定レポート_'+(h.name||'')+'_'+(d=>d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'_'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0'))(new Date(h.date))+'.docx';
+  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1500);
 }
 
 // ===== 外免切替とは（調査結果） =====
